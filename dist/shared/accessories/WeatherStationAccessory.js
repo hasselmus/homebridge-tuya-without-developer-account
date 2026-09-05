@@ -44,10 +44,12 @@ class TemperatureHumiditySensorAccessory extends BaseAccessory_1.default {
         const temperatureSchemas = [];
         const humiditySchemas = [];
         this.device.schema.forEach((schema) => {
-            if (schema.code.includes('ToutCh')) {
+            if (schema.code.includes('ToutCh') ||
+                schema.code.startsWith('temp_current')) {
                 temperatureSchemas.push(schema);
             }
-            else if (schema.code.includes('HoutCh')) {
+            else if (schema.code.includes('HoutCh') ||
+                schema.code === 'humidity_value') {
                 humiditySchemas.push(schema);
             }
         });
