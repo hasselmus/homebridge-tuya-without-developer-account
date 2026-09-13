@@ -1,4 +1,5 @@
 "use strict";
+require("./patches/WindowCoveringDeduplicate");
 const settings_1 = require("./settings");
 const platform_1 = require("./platform");
 module.exports = (api) => {
