@@ -1,11 +1,13 @@
 "use strict";
 
-// Local fork patch: reconcile stale/legacy WindowCovering services before the
-// Tuya curtain accessory is exposed to HomeKit. Older plugin versions can leave
-// an un-subtyped WindowCovering service in the cached PlatformAccessory. The
-// current implementation looks up services by subtype (control/control_2), so it
-// can otherwise add a second WindowCovering service and Apple Home presents the
-// pair as e.g. "Gardin" and "Gardin 2".
+// Local fork patch: normalise Tuya WindowCovering services to the subtype layout
+// expected by current plugin versions. Older cached accessories may contain an
+// un-subtyped WindowCovering service. Reusing that service leaves the structural
+// mismatch in place, so later code can legitimately add a subtype="control"
+// service and Apple Home then exposes both as e.g. "Gardin" and "Gardin 2".
+//
+// This patch therefore creates/keeps only the canonical subtype services
+// (control/control_2) and removes any legacy/surplus WindowCovering services.
 
 const WindowCoveringAccessory = require("../shared/accessories/WindowCoveringAccessory").default;
 const { configureName } = require("../shared/accessories/characteristic/Name");
@@ -27,27 +29,17 @@ WindowCoveringAccessory.prototype.getServiceForIndex = function getServiceForInd
         ? (this.device?.name || 'Window Covering')
         : `${this.device?.name || 'Window Covering'} ${i + 1}`;
 
-    const claimed = new Set(this.__canonicalWindowCoveringServices.values());
-
-    // Prefer the service created by current plugin versions. If it does not
-    // exist, adopt one legacy WindowCovering service rather than creating a
-    // duplicate. This also keeps two-channel curtains working: each channel
-    // claims one distinct existing service before a new service is created.
+    // Only a correctly subtyped service is canonical. Do not adopt an old
+    // un-subtyped service: doing so is what lets a second canonical service be
+    // created later in the lifetime of the same accessory.
     let service = this.accessory.getServiceById(this.Service.WindowCovering, subtype);
 
     if (!service) {
-        const named = this.accessory.getService(subtype);
-        if (named?.UUID === this.Service.WindowCovering.UUID && !claimed.has(named)) {
-            service = named;
+        const legacyCount = this.accessory.services.filter(candidate =>
+            candidate.UUID === this.Service.WindowCovering.UUID).length;
+        if (legacyCount) {
+            this.log.warn(`Creating canonical WindowCovering service subtype=${subtype}; ${legacyCount} legacy/surplus service(s) present`);
         }
-    }
-
-    if (!service) {
-        service = this.accessory.services.find(candidate =>
-            candidate.UUID === this.Service.WindowCovering.UUID && !claimed.has(candidate));
-    }
-
-    if (!service) {
         service = this.accessory.addService(this.Service.WindowCovering, defaultName, subtype);
     }
 
@@ -56,15 +48,8 @@ WindowCoveringAccessory.prototype.getServiceForIndex = function getServiceForInd
     return service;
 };
 
-WindowCoveringAccessory.prototype.configureServices = function configureServicesPatched() {
-    this.__canonicalWindowCoveringServices = new Map();
-
-    // The original method configures handlers for one or two channels. Because
-    // getServiceForIndex above adopts legacy services, all intended services are
-    // now recorded in __canonicalWindowCoveringServices.
-    originalConfigureServices.call(this);
-
-    const keep = new Set(this.__canonicalWindowCoveringServices.values());
+WindowCoveringAccessory.prototype.cleanupWindowCoveringServices = function cleanupWindowCoveringServicesPatched() {
+    const keep = new Set(this.__canonicalWindowCoveringServices?.values() || []);
     let removed = false;
 
     for (const service of [...this.accessory.services]) {
@@ -86,6 +71,30 @@ WindowCoveringAccessory.prototype.configureServices = function configureServices
             this.log.warn(`Failed to persist WindowCovering service cleanup: ${error instanceof Error ? error.message : error}`);
         }
     }
+
+    return removed;
+};
+
+WindowCoveringAccessory.prototype.configureServices = function configureServicesPatched() {
+    this.__canonicalWindowCoveringServices = new Map();
+
+    // The original method configures one or two channels and now receives only
+    // canonical subtype services from the patched getServiceForIndex().
+    originalConfigureServices.call(this);
+    this.cleanupWindowCoveringServices();
+
+    // One delayed sanity pass catches any service recreated by late startup
+    // reconciliation and makes the log diagnostic rather than silently leaving
+    // another duplicate behind. The canonical subtype services themselves are
+    // never removed.
+    setTimeout(() => {
+        try {
+            this.cleanupWindowCoveringServices();
+        }
+        catch (error) {
+            this.log.warn(`Delayed WindowCovering cleanup failed: ${error instanceof Error ? error.message : error}`);
+        }
+    }, 10000);
 };
 
 module.exports = WindowCoveringAccessory;
